@@ -353,11 +353,8 @@ void handle_client(SOCKET conn) {
         string peer = message.substr(pos + 5); // Extract "IP:PORT"
         log_seed("[REGISTRATION PROPOSAL] " + peer);
 
-        // Cast our own vote for this peer
-        {
-            lock_guard<mutex> lock(mtx);
-            votes[peer].insert(PORT);
-        }
+        // Cast our own vote for this peer and check if quorum is reached
+        process_vote(peer, PORT);
 
         // Broadcast our vote to all other seeds so they can also count it
         string vote_msg = "TYPE:VOTE;PEER:" + peer +
