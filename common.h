@@ -8,6 +8,8 @@
 #include <sstream>
 #include <map>
 #include <vector>
+#include <chrono>
+#include <ctime>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -32,5 +34,8 @@ std::string recv_json(SOCKET sock);
 
 //Creates SHA-256 hash of a message
 std::string hash_message(const std::string& msg);
+
+// Returns current timestamp as a formatted string "YYYY-MM-DD HH:MM:SS.mmm"
+std::string get_timestamp();
 
 #endif

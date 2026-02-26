@@ -4,6 +4,7 @@
 #include <fstream>
 #include <thread>
 #include <mutex>
+#include <chrono>
 #include <vector>
 #include <set>
 #include <map>
@@ -138,11 +139,12 @@ UTILITY: LOGGING
 =========================================================
 */
 
-// Prints a tagged message to both console and outputfile.txt.
-// Tag format: [IP:PORT] message
-void log_seed(const string& message) {
+// Prints a timestamped, leveled message to both console and outputfile.txt.
+// Format: YYYY-MM-DD HH:MM:SS.mmm [LEVEL] [IP:PORT] message
+void log_seed(const string& message, const string& level = "INFO") {
+    string ts   = get_timestamp();
     string id   = HOST + ":" + to_string(PORT);
-    string full = "[" + id + "] " + message;
+    string full = ts + " [" + level + "] [" + id + "] " + message;
 
     cout << full << endl;
 
@@ -150,6 +152,20 @@ void log_seed(const string& message) {
         log_file << full << endl;
         log_file.flush(); // Flush immediately so log isn't lost on crash
     }
+}
+
+// Returns a formatted snapshot of the current peer list.
+// MUST be called while holding mtx.
+string format_peer_list() {
+    string result = "Current Peer List: {";
+    bool first = true;
+    for (auto& p : peer_list) {
+        if (!first) result += ", ";
+        result += p;
+        first = false;
+    }
+    result += "} (size=" + to_string(peer_list.size()) + ")";
+    return result;
 }
 
 
@@ -223,6 +239,7 @@ void process_vote(const string& peer, int reporting_seed) {
             log_seed("[CONSENSUS OUTCOME] Peer added: " + peer +
                      " | Votes: " + to_string(current) +
                      "/" + to_string(SEEDS.size()));
+            log_seed(format_peer_list());
         }
         // If already in peer_list, do nothing (duplicate vote arriving late)
     } else {
@@ -264,13 +281,14 @@ void process_dead_vote(const string& target, int reporting_seed) {
             log_seed("[SEED CONSENSUS OUTCOME] Removed dead peer: " +
                      target + " | Votes: " +
                      to_string(current) + "/" +
-                     to_string(SEEDS.size()));
+                     to_string(SEEDS.size()), "WARNING");
+            log_seed(format_peer_list(), "WARNING");
         }
         dead_reports.erase(target); // Clean up so peer can re-register later
     } else {
         log_seed("[DEAD NODE CONSENSUS PROGRESS] " + target +
                  " | Votes: " + to_string(current) +
-                 "/" + to_string(required));
+                 "/" + to_string(required), "WARNING");
     }
 }
 
@@ -309,7 +327,7 @@ void handle_client(SOCKET conn) {
     // -------------------------------------------------------
     if (message.rfind("Dead Node:", 0) == 0) {
 
-        log_seed(message);
+        log_seed(message, "WARNING");
 
         // Split on ':' to extract the dead peer's IP and PORT
         vector<string> parts;
@@ -413,7 +431,83 @@ void handle_client(SOCKET conn) {
         }
     }
 
+    // -------------------------------------------------------
+    // CASE 6: PERIODIC SYNC FROM ANOTHER SEED
+    // Another seed shares its peer list for consistency.
+    // We merge any unknown peers into our own list.
+    // -------------------------------------------------------
+    else if (message.find("TYPE:SYNC_LIST") != string::npos) {
+
+        size_t pos = message.find("PEERS:");
+        if (pos != string::npos) {
+            string peers_str = message.substr(pos + 6);
+            stringstream ss(peers_str);
+            string peer;
+
+            lock_guard<mutex> lock(mtx);
+            bool changed = false;
+            while (getline(ss, peer, ',')) {
+                if (!peer.empty() && peer_list.find(peer) == peer_list.end()) {
+                    peer_list.insert(peer);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                log_seed("[SYNC] Merged peer list from remote seed");
+                log_seed(format_peer_list());
+            }
+        }
+    }
+
     closesocket(conn);
+}
+
+
+/*
+=========================================================
+BACKGROUND: PERIODIC SEED-TO-SEED SYNC
+=========================================================
+*/
+
+/*
+Every 30 seconds, broadcasts this seed's peer list to all other seeds.
+This ensures eventual consistency even if some initial votes were lost
+due to transient network failures or race conditions.
+*/
+void seed_sync_thread() {
+    while (true) {
+        this_thread::sleep_for(chrono::seconds(30));
+
+        string our_peers;
+        {
+            lock_guard<mutex> lock(mtx);
+            for (auto& p : peer_list)
+                our_peers += p + ",";
+        }
+
+        if (our_peers.empty()) continue; // Nothing to sync yet
+
+        string sync_msg = "TYPE:SYNC_LIST;PEERS:" + our_peers;
+
+        for (auto& seed : SEEDS) {
+            if (seed.second == PORT) continue; // Don't send to ourselves
+
+            SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+            if (s == INVALID_SOCKET) continue;
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port   = htons(seed.second);
+            inet_pton(AF_INET, seed.first.c_str(), &addr.sin_addr);
+
+            if (connect(s, (sockaddr*)&addr, sizeof(addr)) == 0) {
+                send_json(s, sync_msg);
+            }
+            closesocket(s);
+        }
+
+        log_seed("[SYNC] Periodic peer-list sync broadcasted to other seeds");
+    }
 }
 
 
@@ -435,7 +529,7 @@ void start_server() {
     SOCKET server = socket(AF_INET, SOCK_STREAM, 0);
     if (server == INVALID_SOCKET) {
         log_seed("[FATAL ERROR] Socket creation failed. WSAError: " +
-                 to_string(WSAGetLastError()));
+                 to_string(WSAGetLastError()), "ERROR");
         return;
     }
 
@@ -453,7 +547,7 @@ void start_server() {
 
     if (bind(server, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
         int err = WSAGetLastError();
-        log_seed("[FATAL ERROR] Bind failed. WSAError: " + to_string(err));
+        log_seed("[FATAL ERROR] Bind failed. WSAError: " + to_string(err), "ERROR");
         if (err == 10048) cout << "  Port already in use — kill existing seed.exe processes\n";
         if (err == 10049) cout << "  IP address not available on this machine\n";
         if (err == 10013) cout << "  Permission denied — try running as Administrator\n";
@@ -464,7 +558,7 @@ void start_server() {
     // Start listening — SOMAXCONN lets the OS choose the backlog queue size
     if (listen(server, SOMAXCONN) == SOCKET_ERROR) {
         log_seed("[FATAL ERROR] Listen failed. WSAError: " +
-                 to_string(WSAGetLastError()));
+                 to_string(WSAGetLastError()), "ERROR");
         closesocket(server);
         return;
     }
@@ -511,6 +605,9 @@ int main(int argc, char* argv[]) {
     log_file.open("outputfile.txt", ios::app);
     if (!log_file.is_open())
         cout << "[WARNING] Could not open outputfile.txt for logging\n";
+
+    // Start periodic seed-to-seed peer-list sync in background
+    thread(seed_sync_thread).detach();
 
     // Start the server — this blocks forever in the accept loop
     start_server();

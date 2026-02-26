@@ -31,13 +31,44 @@ mutex state_lock;
 
 const int PING_FAIL_THRESHOLD = 3;
 
-void log_peer(const string& msg) {
-    string full = "[" + SELF_ID + "] " + msg;
+// Prints a timestamped, leveled message to both console and outputfile.txt.
+// Format: YYYY-MM-DD HH:MM:SS.mmm [LEVEL] [IP:PORT] message
+void log_peer(const string& msg, const string& level = "INFO") {
+    string ts   = get_timestamp();
+    string full = ts + " [" + level + "] [" + SELF_ID + "] " + msg;
     cout << full << endl;
     if (log_file.is_open()) {
         log_file << full << endl;
         log_file.flush();
     }
+}
+
+// Returns a formatted snapshot of the current neighbor list.
+// MUST be called while holding state_lock.
+string format_neighbor_list() {
+    string result = "Connected Neighbors: {";
+    bool first = true;
+    for (auto& n : neighbors) {
+        if (!first) result += ", ";
+        result += n;
+        first = false;
+    }
+    result += "} (size=" + to_string(neighbors.size()) + ")";
+    return result;
+}
+
+// Returns a formatted snapshot of the known peer list.
+// MUST be called while holding state_lock.
+string format_known_peers() {
+    string result = "Known Peers: {";
+    bool first = true;
+    for (auto& p : peer_list) {
+        if (!first) result += ", ";
+        result += p;
+        first = false;
+    }
+    result += "} (size=" + to_string(peer_list.size()) + ")";
+    return result;
 }
 
 vector<pair<string,int>> load_seeds() {
@@ -126,6 +157,12 @@ void register_and_get_peers() {
         }
         closesocket(s);
     }
+
+    // Log the full known peer list after registration completes
+    {
+        lock_guard<mutex> lock(state_lock);
+        log_peer(format_known_peers());
+    }
 }
 
 void build_topology() {
@@ -207,6 +244,12 @@ void build_topology() {
         }
         closesocket(s);
     }
+
+    // Log complete neighbor list after topology is built
+    {
+        lock_guard<mutex> lock(state_lock);
+        log_peer(format_neighbor_list());
+    }
 }
 
 void report_dead_to_seeds(const string& dead_peer) {
@@ -218,7 +261,7 @@ void report_dead_to_seeds(const string& dead_peer) {
     string report    = "Dead Node:" + dead_ip + ":" + dead_port +
                        ":" + to_string(ts) + ":" + HOST;
 
-    log_peer("[DEAD NODE REPORT] Sending to seeds: " + dead_peer);
+    log_peer("[DEAD NODE REPORT] Sending to seeds: " + dead_peer, "WARNING");
 
     for (auto& seed : seeds) {
         SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
@@ -245,7 +288,7 @@ void broadcast_suspicion(const string& suspected_peer) {
                 targets.push_back(n);
     }
 
-    log_peer("[SUSPICION] Broadcasting suspicion about " + suspected_peer);
+    log_peer("[SUSPICION] Broadcasting suspicion about " + suspected_peer, "WARNING");
     string msg = "TYPE:SUSPICION;TARGET:" + suspected_peer + ";REPORTER:" + SELF_ID;
 
     for (auto& target : targets) {
@@ -275,13 +318,15 @@ void check_suspicion_consensus(const string& suspected_peer) {
     if (votes >= required) {
         log_peer("[DEAD NODE CONFIRMED] Peer-level consensus on: " +
                  suspected_peer + " | Votes: " + to_string(votes) +
-                 "/" + to_string(neighbors.size()));
+                 "/" + to_string(neighbors.size()), "WARNING");
 
         neighbors.erase(suspected_peer);
         last_seen.erase(suspected_peer);
         ping_failures.erase(suspected_peer);
         suspicion_votes.erase(suspected_peer);
         peer_list.erase(suspected_peer);
+
+        log_peer(format_neighbor_list(), "WARNING");
 
         thread([suspected_peer]() {
             report_dead_to_seeds(suspected_peer);
@@ -420,6 +465,10 @@ void handle_peer_client(SOCKET conn) {
             ping_failures[peer] = 0;
         }
         log_peer("[NETWORK] Bidirectional link with " + peer);
+        {
+            lock_guard<mutex> lock(state_lock);
+            log_peer(format_neighbor_list());
+        }
     }
     else if (message.find("TYPE:GOSSIP") != string::npos) {
         size_t mpos = message.find("MSG:");
@@ -520,7 +569,7 @@ void handle_peer_client(SOCKET conn) {
                 lock_guard<mutex> lock(state_lock);
                 suspicion_votes[target].insert(voter);
             }
-            log_peer("[SUSPICION VOTE] " + voter + " confirms " + target + " is dead");
+            log_peer("[SUSPICION VOTE] " + voter + " confirms " + target + " is dead", "WARNING");
             check_suspicion_consensus(target);
         }
     }

@@ -51,6 +51,23 @@ std::string recv_json(SOCKET sock) {
     return std::string(buffer, bytesReceived);
 }
 
+// Returns current timestamp formatted as "YYYY-MM-DD HH:MM:SS.mmm"
+std::string get_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+
+    std::tm* tm_ptr = std::localtime(&time_t_now);
+
+    char time_str[32];
+    std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_ptr);
+
+    std::stringstream ss;
+    ss << time_str << "." << std::setw(3) << std::setfill('0') << ms.count();
+    return ss.str();
+}
+
 // SHA-256 hashing
 // PURE C++ SHA-256
 

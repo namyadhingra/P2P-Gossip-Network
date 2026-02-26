@@ -20,7 +20,12 @@ The architecture actively prevents unilateral or malicious network alterations. 
 
 ## 📊 System Architecture & Flowcharts
 
-### 1. Peer Registration Consensus Flow
+### 1. System Startup Sequence
+The `run_all.py` script orchestrates the full network deployment: compile → launch seeds → wait → launch peers → interactive console.
+
+![System Startup Sequence](images/1.%20System%20Startup%20Sequence.png)
+
+### 2. Peer Registration Consensus Flow
 A node is only admitted to the network when a majority (⌊n/2⌋+1) of seed nodes agree on its inclusion.
 
 ```mermaid
@@ -45,7 +50,7 @@ sequenceDiagram
     S1-->>P: 5. Returns consensus-approved Peer List
 ```
 
-### 2. Liveness Detection & Dead-Node Eviction Flow
+### 3. Liveness Detection & Dead-Node Eviction Flow
 Nodes are not removed based on a single failure. The system mitigates false suspicions through cross-verification.
 
 ```mermaid
@@ -64,6 +69,21 @@ graph TD
     L --> M((Seed Consensus Reached: Peer B Evicted globally))
 ```
 
+### 4. Seed-Level Dead-Node Eviction Consensus
+After peer-level consensus, the dead-node report is sent to all seeds. Seeds exchange `SEED_DEAD_VOTE` messages until quorum removes the peer globally.
+
+![Seed-Level Dead-Node Eviction Consensus](images/6-%20Seed-Level%20Dead-Node%20Eviction%20Consensus.png)
+
+### 5. Full Message Lifecycle — `seed.cpp` (`handle_client`)
+Every incoming TCP connection to a seed is routed through `handle_client()`, which dispatches based on message type:
+
+![Seed handle_client Flowchart](images/7-%20Full%20Message%20Lifecycle%20(seed.cpp%20%E2%80%94%20handle_client).png)
+
+### 6. Full Message Lifecycle — `peer.cpp` (`handle_peer_client`)
+Every incoming TCP connection to a peer is routed through `handle_peer_client()`, handling degree queries, connection requests, gossip (with SHA-256 dedup), suspicion, and confirmation:
+
+![Peer handle_peer_client Flowchart](images/Full%20Message%20Lifecycle%20(peer.cpp%20-%20handle_peer_client).jpg.jpeg)
+
 ---
 
 ## 📁 File Structure
@@ -76,6 +96,7 @@ graph TD
 | `run_all.py` | Python automation script to compile the C++ binaries, deploy the network, and simulate node deaths. |
 | `config.txt` | Configuration file storing the IP address and port pairs of the designated seed nodes. |
 | `outputfile.txt` | The consolidated execution log of the network, with entries prefixed by node identifiers. |
+| `visualizer.html` | Interactive network replay visualizer using Vis.js to animate network topology, gossip propagation, and fault tolerance events. |
 
 ---
 
@@ -144,3 +165,39 @@ If you prefer to compile and run manually via the command line:
 **Vulnerability:** A group of malicious peers collude to forge a Dead Node report against a legitimate user, or spam bogus registration requests to flood the network.
 
 **Mitigation:** Implemented Seed-Level Consensus. Registration requests mandate connecting to a randomized subset of exactly ⌊n/2⌋+1 seeds. Furthermore, seeds do not implicitly trust Dead Node reports from peers. Upon receiving a report, seeds exchange SEED_DEAD_VOTE payloads. A peer is exclusively added to or purged from the network's global Peer Lists if a majority of independent seed nodes compute a definitive quorum, neutralizing unilateral disruption attempts.
+
+---
+
+## 🎨 Bonus: Network Replay Visualizer
+
+A front-end visualizer (`visualizer.html`) is included to replay the network's state chronologically. 
+
+**Usage:** Open `visualizer.html` in any web browser, upload the generated `outputfile.txt`, and click Play to watch the power-law topology form, gossip propagate, and the multi-level consensus isolate dead nodes in real-time.
+
+The visualizer dynamically shows:
+- **Differentiated Nodes:** Seeds as gold diamonds, Peers as blue circles
+- **Power-Law Topology:** Drawing the lines (edges) exactly when peers connect, visualizing the hub-and-spoke graph forming
+- **Gossip Dissemination:** Flashing a node green when it logs `[GOSSIP RECEIVED]`
+- **Fault Tolerance:** Turning a node red and deleting its edges when it is reported dead or removed by consensus
+- **Timeline Replay:** Reading the log line-by-line with adjustable speed so you can watch the network evolve like a movie
+
+![Visualizer Screenshot](images/visualizer_screenshot.png)
+
+---
+
+## 📸 Outputs
+
+### Automation Script Output
+![run_all.py output](images/run_all_output.png)
+
+### Seed Node Console
+![Seed console](images/console_seeds.png)
+
+### Peer Node Console
+![Peer console](images/console_peers.png)
+
+### Dead Node Test (Fault Tolerance)
+![Dead node test](images/dead_node_test.png)
+
+### Combined Log File (`outputfile.txt`)
+![outputfile.txt sample](images/outputfile_sample.png)
